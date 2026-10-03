@@ -24,21 +24,15 @@ def _box(points: Any) -> dict[str, int]:
 
 
 def _word_tokens(text: str, confidence: float, bounds: dict[str, int], engine: str) -> list[dict[str, Any]]:
-    """Split OCR lines at whitespace and estimate each token's horizontal extent."""
+    """Split OCR lines at whitespace and retain the full line bounds for each token."""
     words = text.split()
     if not words:
         return []
-    total = sum(len(word) for word in words)
-    cursor = bounds["x"]
     output = []
-    for index, word in enumerate(words):
-        width = round(bounds["w"] * len(word) / total)
-        if index == len(words) - 1:
-            width = bounds["x"] + bounds["w"] - cursor
+    for word in words:
         output.append({"text": word, "confidence": confidence,
-                       "bounding_box": {"x": cursor, "y": bounds["y"], "w": max(0, width), "h": bounds["h"]},
+                       "bounding_box": dict(bounds),
                        "engine": engine})
-        cursor += width
     return output
 
 

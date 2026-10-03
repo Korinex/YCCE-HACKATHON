@@ -30,6 +30,17 @@ def test_indic_digit_normalization_preserves_digit_offsets():
     assert normalized[finding["start"]:finding["end"]] == finding["raw_value"] == "999941057058"
 
 
+def test_grouped_aadhaar_is_validated_and_preferred_over_longer_review_card():
+    finding = detect_text("Aadhaar 2341 2341 2346")[0]
+    assert finding["type"] == "AADHAAR"
+    assert finding["raw_value"] == "2341 2341 2346"
+    assert finding["validation_tier"] == "VALIDATED"
+
+    overlapping = detect_text("Aadhaar 2341 2341 2346 8")
+    assert [item["type"] for item in overlapping] == ["AADHAAR"]
+    assert overlapping[0]["validation_tier"] == "VALIDATED"
+
+
 def test_bank_account_needs_context_and_longest_match_wins():
     assert not detect_text("Reference 123456789012")[0:1]
     items = detect_text("Aadhaar 234123412346 and account 123456789012")
@@ -63,6 +74,14 @@ def test_ocr_findings_retain_confidence_and_union_box():
     finding = detect_text(text, tokens)[0]
     assert finding["bounding_box"] == {"x": 12, "y": 4, "w": 50, "h": 9}
     assert finding["confidence"] < 0.6
+
+
+def test_ocr_word_tokens_use_full_line_bounds():
+    from app.ocr_engine import _word_tokens
+
+    bounds = {"x": 10, "y": 20, "w": 90, "h": 12}
+    tokens = _word_tokens("Aadhaar number", 0.9, bounds, "test")
+    assert [token["bounding_box"] for token in tokens] == [bounds, bounds]
 
 
 def test_ocr_quality_fails_closed_when_empty_or_weak(monkeypatch):
@@ -137,3 +156,23 @@ def test_stable_image_handoff_marks_qr_unavailable(monkeypatch):
     result = analyze_content("image", b"synthetic image bytes")
     assert result["qr_findings"] == []
     assert result["document"]["qr_status"] == "UNAVAILABLE"
+    assert "QR_DETECTION_UNAVAILABLE_REVIEW_REQUIRED" in result["document"]["warnings"]
+
+
+def test_stable_image_handoff_distinguishes_qr_failure_from_empty_scan(monkeypatch):
+    import app.pipeline
+    import app.qr
+
+    monkeypatch.setattr(app.pipeline, "analyze_image", lambda _: {
+        "detected_items": [], "ocr_tokens": [], "page_quality": "GOOD", "warnings": [],
+    })
+    monkeypatch.setattr(app.pipeline, "find_spec", lambda _: object())
+    monkeypatch.setattr(app.qr, "detect_qr_codes", lambda _: [])
+    empty_scan = analyze_content("image", b"synthetic image bytes")
+    assert empty_scan["document"]["qr_status"] == "AVAILABLE"
+    assert empty_scan["document"]["warnings"] == []
+
+    monkeypatch.setattr(app.qr, "detect_qr_codes", lambda _: None)
+    failed_scan = analyze_content("image", b"synthetic image bytes")
+    assert failed_scan["document"]["qr_status"] == "UNAVAILABLE"
+    assert "QR_DETECTION_UNAVAILABLE_REVIEW_REQUIRED" in failed_scan["document"]["warnings"]
