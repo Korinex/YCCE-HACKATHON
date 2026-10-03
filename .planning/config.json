@@ -1,0 +1,9 @@
+{
+  "project_name": "PS-06 Privacy Shield",
+  "workflow": "gsd",
+  "phase": 1,
+  "branch": "feat/backend-core",
+  "status": "initialized",
+  "session_ttl_seconds": 600,
+  "allow_demo_ttl": false
+}

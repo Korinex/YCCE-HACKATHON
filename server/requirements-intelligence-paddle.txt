@@ -1,0 +1,4 @@
+# Optional only: adds the legacy PaddleOCR 2.x fallback to the base OCR profile.
+-r requirements-intelligence.txt
+paddlepaddle==2.6.2
+paddleocr==2.10.0
