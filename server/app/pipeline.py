@@ -47,6 +47,36 @@ _HEALTH = re.compile(
     r"blood pressure|medication|病|रक्तचाप)\b", re.I,
 )
 _KNOWN_STRENGTH = {"VALIDATED": 1.0, "FORMAT_ONLY": 0.6, "REVIEW": 0.35}
+_RULE_NAMES = {
+    "AADHAAR": "aadhaar.verhoeff.v1", "VID": "vid.format.v1", "PAN": "pan.format.v1",
+    "GSTIN": "gstin.format.v1", "IFSC": "ifsc.format.v1", "BANK_ACCOUNT": "bank_account.context.v1",
+    "UPI": "upi.suffix.v1", "PHONE": "phone.india.v1", "CREDIT_CARD": "card.luhn.v1",
+    "PASSPORT": "passport.context.v1", "VOTER_ID": "voter_id.context.v1",
+    "DRIVING_LICENCE": "driving_licence.context.v1", "VEHICLE": "vehicle.context.v1",
+    "EMAIL": "email.format.v1", "HEALTH_TERM": "health.lexicon.v1",
+}
+
+
+def _sensitivity(kind: str) -> str:
+    if kind in {"AADHAAR", "VID", "PAN", "PASSPORT", "VOTER_ID", "DRIVING_LICENCE"}:
+        return "GOVT_ID"
+    if kind in {"BANK_ACCOUNT", "IFSC", "UPI", "CREDIT_CARD", "GSTIN"}:
+        return "FINANCIAL"
+    if kind in {"PHONE", "EMAIL"}:
+        return "CONTACT"
+    if kind == "HEALTH_TERM":
+        return "HEALTH"
+    if kind == "VEHICLE":
+        return "VEHICLE_ID"
+    return "OTHER"
+
+
+def _context_hits(text: str, start: int, end: int, kind: str) -> list[str]:
+    pattern = _CONTEXT.get(kind)
+    if not pattern:
+        return []
+    window = text[max(0, start - 40):min(len(text), end + 40)]
+    return list(dict.fromkeys(match.group(0).lower() for match in re.finditer(pattern, window, re.I)))[:3]
 
 
 def normalize_digits(text: str) -> str:
@@ -100,7 +130,7 @@ def _masked(kind: str, raw: str) -> str:
 
 
 def _finding(kind: str, text: str, start: int, end: int, ocr_confidence: float = 1.0,
-             bounding_box: dict[str, int] | None = None) -> dict[str, Any]:
+             bounding_box: dict[str, int] | None = None, source: str = "text") -> dict[str, Any]:
     raw = text[start:end]
     tier, reason = _classify(kind, raw, text, start, end)
     score = _KNOWN_STRENGTH[tier] * min(1.0, max(0.0, ocr_confidence) / 0.9)
@@ -112,6 +142,12 @@ def _finding(kind: str, text: str, start: int, end: int, ocr_confidence: float =
         "validation_tier": tier, "confidence": round(score, 4),
         "confidence_band": confidence_band, "start": start, "end": end,
         "bounding_box": bounding_box, "action": "MASK",
+        "rule": _RULE_NAMES.get(kind, "scout.pattern.v1"),
+        "context_hit": _context_hits(text, start, end, kind),
+        "sensitivity": _sensitivity(kind),
+        "source": source,
+        "ocr_confidence": round(ocr_confidence, 4) if source == "ocr" else None,
+        "page": None,
         "review_required": tier == "REVIEW" or confidence_band != "HIGH",
     }
 
@@ -158,7 +194,8 @@ def detect_text(text: str, ocr_tokens: list[dict[str, Any]] | None = None) -> li
                     left = min(b["x"] for b in boxes); top = min(b["y"] for b in boxes)
                     right = max(b["x"] + b["w"] for b in boxes); bottom = max(b["y"] + b["h"] for b in boxes)
                     box = {"x": left, "y": top, "w": right-left, "h": bottom-top}
-        output.append(_finding(item["kind"], text, item["start"], item["end"], conf, box))
+        output.append(_finding(item["kind"], text, item["start"], item["end"], conf, box,
+                               source="ocr" if ocr_tokens is not None else "text"))
     return output
 
 
