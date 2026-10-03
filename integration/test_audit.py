@@ -12,10 +12,13 @@ is used anywhere in this file.
 from __future__ import annotations
 
 import io
+import importlib.util
 import struct
 import sys
 import zlib
 from pathlib import Path
+
+import pytest
 
 _SERVER_DIR = Path(__file__).parent.parent / "server"
 if str(_SERVER_DIR) not in sys.path:
@@ -312,7 +315,7 @@ def test_detector_rescan_uses_real_pipeline():
 
 
 def test_string_search_runs_for_image_with_integrated_ocr():
-    """Integrated OCR makes image string search available."""
+    """Image string search runs when OCR is available, otherwise degrades safely."""
     result = verify_cleaned_output(
         original_session={},
         cleaned_bytes=_minimal_png(),
@@ -320,7 +323,11 @@ def test_string_search_runs_for_image_with_integrated_ocr():
         findings=[_finding("f1")],
     )
     ss = _get_check(result, "STRING_SEARCH")
-    assert ss.status in {"PASSED", "FAILED"}
+    if not (importlib.util.find_spec("rapidocr_onnxruntime") or importlib.util.find_spec("paddleocr")):
+        assert ss.status == "UNSUPPORTED"
+        assert "OCR produced no usable text" in ss.reason
+    else:
+        assert ss.status in {"PASSED", "FAILED"}
 
 
 def test_qr_redecode_not_applicable_for_text():
@@ -337,7 +344,7 @@ def test_qr_redecode_not_applicable_for_text():
 
 
 def test_qr_redecode_runs_for_image():
-    """For image content QR_REDECODE must run (PASSED or FAILED, not UNSUPPORTED)."""
+    """For images, QR_REDECODE runs or reports unavailable OpenCV explicitly."""
     result = verify_cleaned_output(
         original_session={"qr_codes": []},
         cleaned_bytes=_minimal_png(),
@@ -345,9 +352,11 @@ def test_qr_redecode_runs_for_image():
         findings=[],
     )
     qr = _get_check(result, "QR_REDECODE")
-    assert qr.status != "UNSUPPORTED", (
-        f"QR_REDECODE should run for image but got UNSUPPORTED: {qr.reason}"
-    )
+    if importlib.util.find_spec("cv2") is None:
+        assert qr.status == "UNSUPPORTED"
+        assert "not importable" in qr.reason
+    else:
+        assert qr.status != "UNSUPPORTED", f"QR_REDECODE did not run: {qr.reason}"
 
 
 def test_missing_original_image_session_makes_qr_check_unsupported():
@@ -518,6 +527,8 @@ def test_metadata_png_with_text_chunk_fails():
 
 def test_qr_redecode_no_qr_in_minimal_png():
     """Minimal PNG has no QR codes; original session empty → PASSED."""
+    if importlib.util.find_spec("cv2") is None:
+        pytest.skip("OpenCV QR detection is an optional dependency")
     result = verify_cleaned_output(
         original_session={"qr_codes": []},
         cleaned_bytes=_minimal_png(),
@@ -531,6 +542,8 @@ def test_qr_redecode_no_qr_in_minimal_png():
 
 def test_qr_redecode_expected_redaction_disappearance_passes():
     """A QR selected for masking should disappear, not be treated as a leak."""
+    if importlib.util.find_spec("cv2") is None:
+        pytest.skip("OpenCV QR detection is an optional dependency")
     result = verify_cleaned_output(
         original_session={"qr_codes": [{"data": "SYNTH", "points": [], "action": "MASK"}]},
         cleaned_bytes=_minimal_png(),
@@ -553,7 +566,7 @@ def test_qr_inventory_without_redaction_action_is_unsupported():
 
 
 def _patch_qr_detector(monkeypatch, fake_detector):
-    import cv2
+    cv2 = pytest.importorskip("cv2")
     monkeypatch.setattr(cv2, "QRCodeDetector", lambda: fake_detector)
 
 
