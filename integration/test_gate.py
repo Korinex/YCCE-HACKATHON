@@ -346,6 +346,14 @@ def test_keep_with_missing_decided_by_user_blocks():
     assert "ERR_KEEP_WITHOUT_USER_DECISION" in result["block_reasons"]
 
 
+def test_finding_keep_without_matching_explicit_decision_blocks():
+    finding = {**_finding("f1"), "action": "KEEP"}
+    result = evaluate_export_gate(findings=[finding], decisions=[], strict_mode=False,
+                                  ocr_quality="GOOD", audit_verdict="CLEAN")
+    assert result["export_blocked"] is True
+    assert "ERR_KEEP_WITHOUT_USER_DECISION" in result["block_reasons"]
+
+
 # ---------------------------------------------------------------------------
 # 6. Expanded action set acceptance
 # ---------------------------------------------------------------------------
@@ -495,6 +503,15 @@ def test_result_never_contains_raw_values():
     assert "1234-5678-9012" not in combined
 
 
+def test_reason_codes_never_echo_untrusted_finding_id():
+    secret = "PRIVATE-555-0199"
+    result = evaluate_export_gate(
+        findings=[{"id": secret, "validity_class": "INVALID", "sensitivity": "CONTACT"}],
+        decisions=[], strict_mode=False, ocr_quality="GOOD", audit_verdict="CLEAN")
+    assert result["export_blocked"] is True
+    assert secret not in repr(result)
+
+
 # ---------------------------------------------------------------------------
 # 9. Finding field validation: validity_class and sensitivity
 # ---------------------------------------------------------------------------
@@ -554,6 +571,17 @@ def test_unknown_sensitivity_blocks():
     assert "ERR_INVALID_SENSITIVITY" in result["block_reasons"]
 
 
+def test_unhashable_schema_fields_fail_closed_without_exception():
+    result = evaluate_export_gate(
+        findings=[{"id": "f1", "validity_class": [], "sensitivity": ["CONTACT"]}],
+        decisions=[{"id": "f1", "action": []}], strict_mode=False,
+        ocr_quality="GOOD", audit_verdict="CLEAN")
+    assert result["export_blocked"] is True
+    assert "ERR_INVALID_VALIDITY_CLASS" in result["block_reasons"]
+    assert "ERR_INVALID_SENSITIVITY" in result["block_reasons"]
+    assert "ERR_UNSUPPORTED_ACTION" in result["block_reasons"]
+
+
 def test_both_fields_valid_allows_export():
     """Sanity: all four recognised sensitivities with VALIDATED class must pass."""
     for sens in ("GOVT_ID", "FINANCIAL", "HEALTH", "CONTACT"):
@@ -565,3 +593,10 @@ def test_both_fields_valid_allows_export():
             audit_verdict="CLEAN",
         )
         assert result["export_blocked"] is False, f"Unexpected block for sensitivity={sens}"
+
+
+def test_backend2_validation_tier_maps_to_gate_validity_class():
+    finding = {"id": "f1", "validation_tier": "FORMAT_ONLY", "sensitivity": "CONTACT"}
+    result = evaluate_export_gate(findings=[finding], decisions=[], strict_mode=False,
+                                  ocr_quality="GOOD", audit_verdict="CLEAN")
+    assert result["export_blocked"] is False

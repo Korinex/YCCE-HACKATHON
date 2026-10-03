@@ -54,6 +54,7 @@ def _png_with_text_chunk(keyword: str, text: str) -> bytes:
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
         + _png_chunk(b"tEXt", payload)
+        + _png_chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff"))
         + _png_chunk(b"IEND", b"")
     )
 
@@ -196,8 +197,8 @@ def test_residual_hit_contains_no_raw_value():
         assert raw not in (hit.region or "")
 
 
-def test_kept_finding_not_flagged():
-    """action=KEEP → intentionally retained, must not appear in residuals."""
+def test_kept_finding_is_still_reported_as_residual():
+    """KEEP does not suppress raw-value detection or a residual report."""
     raw = "SYNTH-KEEPVAL-XYZ"
     result = verify_cleaned_output(
         original_session={},
@@ -205,8 +206,27 @@ def test_kept_finding_not_flagged():
         cleaned_content_type=_TEXT,
         findings=[_finding("f1", raw_value=raw, action="KEEP")],
     )
-    assert _get_check(result, "STRING_SEARCH").status == "PASSED"
-    assert result.residuals == []
+    assert _get_check(result, "STRING_SEARCH").status == "FAILED"
+    assert result.verdict == "FAIL"
+    assert result.residuals[0].category == "PAN"
+    assert raw not in repr(result.to_dict())
+
+
+def test_pdf_is_unsupported_and_never_clean():
+    result = verify_cleaned_output(original_session={}, cleaned_bytes=b"%PDF-1.7",
+                                   cleaned_content_type="pdf", findings=[])
+    assert result.verdict == "PARTIAL"
+    assert result.ran == 0
+
+
+def test_empty_ocr_result_is_unsupported(monkeypatch):
+    from app import ocr_engine
+    monkeypatch.setattr(ocr_engine, "extract_text_and_boxes", lambda _image: [])
+    result = verify_cleaned_output(original_session={"qr_codes": []},
+                                   cleaned_bytes=_minimal_png(),
+                                   cleaned_content_type=_IMAGE, findings=[])
+    assert _get_check(result, "STRING_SEARCH").status == "UNSUPPORTED"
+    assert result.verdict == "PARTIAL"
 
 
 def test_multiple_findings_one_residual():
@@ -511,17 +531,151 @@ def test_qr_redecode_no_qr_in_minimal_png():
     assert result.verdict != "FAIL"
 
 
-def test_qr_redecode_count_mismatch_fails():
-    """Session records 1 QR code but cleaned image has 0 → FAILED."""
+def test_qr_redecode_expected_redaction_disappearance_passes():
+    """A QR selected for masking should disappear, not be treated as a leak."""
     result = verify_cleaned_output(
-        original_session={"qr_codes": [{"data": "SYNTH", "points": []}]},
+        original_session={"qr_codes": [{"data": "SYNTH", "points": [], "action": "MASK"}]},
         cleaned_bytes=_minimal_png(),
         cleaned_content_type=_IMAGE,
         findings=[],
     )
     qr = _get_check(result, "QR_REDECODE")
-    assert qr.status == "FAILED"
-    assert result.verdict == "FAIL"
+    assert qr.status == "PASSED"
+    assert result.verdict != "FAIL"
+    assert "SYNTH" not in repr(result.to_dict())
+
+
+def test_qr_inventory_without_redaction_action_is_unsupported():
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": "SYNTH-QR-PAYLOAD", "points": []}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    assert _get_check(result, "QR_REDECODE").status == "UNSUPPORTED"
+    assert result.verdict == "PARTIAL"
+    assert "SYNTH-QR-PAYLOAD" not in repr(result.to_dict())
+
+
+def _patch_qr_detector(monkeypatch, fake_detector):
+    import cv2
+    monkeypatch.setattr(cv2, "QRCodeDetector", lambda: fake_detector)
+
+
+def test_qr_multi_no_points_fallback_finds_remaining_masked_qr(monkeypatch):
+    import numpy as np
+
+    points = np.array([[[1, 1], [20, 1], [20, 20], [1, 20]]], dtype=float)
+
+    class FakeDetector:
+        def detectAndDecodeMulti(self, _image):
+            return False, (), None, ()
+
+        def detectAndDecode(self, _image):
+            # Empty payload, but the returned rectangle proves a QR remains.
+            return "", points[0], None
+
+        def detectMulti(self, _image):
+            return True, points
+
+    _patch_qr_detector(monkeypatch, FakeDetector())
+    payload = "SYNTHETIC-QR-SECRET"
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": payload, "points": points[0].tolist(),
+                                        "action": "MASK"}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    assert _get_check(result, "QR_REDECODE").status == "FAILED"
+    assert any(hit.category == "QR" for hit in result.residuals)
+    assert payload not in repr(result.to_dict())
+
+
+def test_qr_fallback_unable_to_establish_absence_is_unsupported(monkeypatch):
+    class FakeDetector:
+        def detectAndDecodeMulti(self, _image):
+            return False, (), None, ()
+
+        def detectAndDecode(self, _image):
+            raise RuntimeError("synthetic private payload must not escape")
+
+        def detectMulti(self, _image):
+            raise RuntimeError("synthetic private payload must not escape")
+
+    _patch_qr_detector(monkeypatch, FakeDetector())
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": "SYNTH", "points": [], "action": "MASK"}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    qr = _get_check(result, "QR_REDECODE")
+    assert qr.status == "UNSUPPORTED"
+    assert result.verdict == "PARTIAL"
+    assert "synthetic private payload" not in repr(result.to_dict())
+
+
+def test_qr_single_no_rectangle_but_rectangle_detector_error_is_unsupported(monkeypatch):
+    class FakeDetector:
+        def detectAndDecodeMulti(self, _image):
+            return False, (), None, ()
+
+        def detectAndDecode(self, _image):
+            return "", None, None
+
+        def detectMulti(self, _image):
+            raise RuntimeError("synthetic private payload must not escape")
+
+    _patch_qr_detector(monkeypatch, FakeDetector())
+    payload = "SYNTH-MASKED-QR-SECRET"
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": payload, "points": [],
+                                        "action": "MASK"}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    qr = _get_check(result, "QR_REDECODE")
+    assert qr.status == "UNSUPPORTED"
+    assert result.verdict == "PARTIAL"
+    assert "PASSED" not in repr(qr)
+    assert payload not in repr(result.to_dict())
+    assert "synthetic private payload" not in repr(result.to_dict())
+
+
+def test_masked_qr_absence_passes_only_after_fallbacks_confirm_no_rectangles(monkeypatch):
+    class FakeDetector:
+        def detectAndDecodeMulti(self, _image):
+            return False, (), None, ()
+
+        def detectAndDecode(self, _image):
+            return "", None, None
+
+        def detectMulti(self, _image):
+            return False, None
+
+    _patch_qr_detector(monkeypatch, FakeDetector())
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": "SYNTH", "points": [], "action": "REMOVE"}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    assert _get_check(result, "QR_REDECODE").status == "PASSED"
+
+
+def test_kept_qr_is_unverified_and_never_clean(monkeypatch):
+    import numpy as np
+
+    points = np.array([[[1, 1], [20, 1], [20, 20], [1, 20]]], dtype=float)
+
+    class FakeDetector:
+        def detectAndDecodeMulti(self, _image):
+            return True, ("SYNTH-PRIVATE-PAYLOAD",), points, ()
+
+        def detectAndDecode(self, _image):
+            raise AssertionError("fallback should not be needed when points exist")
+
+        def detectMulti(self, _image):
+            raise AssertionError("fallback should not be needed when points exist")
+
+    _patch_qr_detector(monkeypatch, FakeDetector())
+    payload = "SYNTH-PRIVATE-PAYLOAD"
+    result = verify_cleaned_output(
+        original_session={"qr_codes": [{"data": payload, "points": points[0].tolist(),
+                                        "action": "KEEP"}]},
+        cleaned_bytes=_minimal_png(), cleaned_content_type=_IMAGE, findings=[])
+    qr = _get_check(result, "QR_REDECODE")
+    assert qr.status == "UNSUPPORTED"
+    assert "UNVERIFIED" in (qr.reason + qr.method_note).upper()
+    assert result.verdict == "PARTIAL"
+    assert payload not in repr(result.to_dict())
 
 
 def test_qr_redecode_signature_unverified_note():
@@ -543,15 +697,22 @@ def test_qr_redecode_signature_unverified_note():
 # ---------------------------------------------------------------------------
 
 
-def test_invalid_content_type_returns_fail():
-    """Unknown content_type → FAIL immediately."""
+def test_unsupported_content_type_returns_partial():
+    """PDF/other formats cannot silently pass or be represented as CLEAN."""
     result = verify_cleaned_output(
         original_session={},
         cleaned_bytes=b"anything",
         cleaned_content_type="video",
         findings=[],
     )
-    assert result.verdict == "FAIL"
+    assert result.verdict == "PARTIAL"
+    assert result.ran == 0
+
+
+def test_malformed_content_type_cannot_raise_or_pass():
+    result = verify_cleaned_output(original_session={}, cleaned_bytes=b"bytes",
+                                   cleaned_content_type=[], findings=[])
+    assert result.verdict == "PARTIAL"
 
 
 def test_empty_bytes_text_passes_string_search():
@@ -565,26 +726,27 @@ def test_empty_bytes_text_passes_string_search():
     assert _get_check(result, "STRING_SEARCH").status == "PASSED"
 
 
-def test_malformed_finding_skipped():
-    """Non-dict entries in findings silently skipped; no crash."""
+def test_malformed_finding_is_unsupported():
+    """Malformed findings cannot be silently skipped into a passing check."""
     result = verify_cleaned_output(
         original_session={},
         cleaned_bytes=_bytes("clean"),
         cleaned_content_type=_TEXT,
         findings=["not-a-dict", None, 42],  # type: ignore[list-item]
     )
-    assert _get_check(result, "STRING_SEARCH").status == "PASSED"
+    assert _get_check(result, "STRING_SEARCH").status == "UNSUPPORTED"
+    assert result.verdict == "PARTIAL"
 
 
-def test_finding_without_raw_value_skipped():
-    """Finding with no raw_value or value_masked → skipped, PASSED."""
+def test_finding_without_raw_value_is_unsupported():
+    """Missing original value makes the literal-search check unsupported."""
     result = verify_cleaned_output(
         original_session={},
         cleaned_bytes=_bytes("some text"),
         cleaned_content_type=_TEXT,
         findings=[{"id": "f1", "type": "PAN", "action": "MASK"}],
     )
-    assert _get_check(result, "STRING_SEARCH").status == "PASSED"
+    assert _get_check(result, "STRING_SEARCH").status == "UNSUPPORTED"
 
 
 def test_method_note_present():
