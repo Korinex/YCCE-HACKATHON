@@ -1,8 +1,8 @@
-# Optional local vision stack for Backend 2. Install alongside requirements.txt
-# only on machines that need image OCR and QR detection.
+# Pinned base OCR/QR profile for Python 3.11/3.12 evaluation.
+# This does not include PaddleOCR; it is an optional fallback profile.
 -r requirements.txt
-Pillow>=10,<12
-numpy>=1.26,<3
-rapidocr_onnxruntime>=1.4,<2
-paddleocr>=2.8,<4
-opencv-python-headless>=4.10,<5
+Pillow==11.3.0
+numpy==1.26.4
+rapidocr_onnxruntime==1.4.4
+onnxruntime==1.20.1
+opencv-python==4.10.0.84

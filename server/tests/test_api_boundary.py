@@ -15,7 +15,7 @@ def test_api_adapter_masks_raw_values_and_uses_frozen_finding_shape():
         "confidence": 0.6,
         "confidence_band": "MEDIUM",
         "rule": "pan.format.v1",
-        "reason": "FORMAT_MATCH; FORMAT_ONLY; ISSUER_NOT_CHECKED",
+        "reason": "FORMAT_MATCH; FORMAT_ONLY; ISSUER_NOT_CHECKED; CONTEXT_MATCH",
         "context_hit": ["pan"],
         "sensitivity": "GOVT_ID",
         "source": "text",
@@ -36,6 +36,7 @@ def test_api_adapter_adds_pixel_space_bbox_and_decisions_without_mutating():
     ])[0]
     public = findings_for_api([internal])
     assert public[0]["source"] == "ocr"
+    assert "OCR_REVIEW" in public[0]["reason"]
     assert public[0]["ocr_confidence"] == 0.9
     assert public[0]["bbox"] == {"x": 12, "y": 4, "w": 50, "h": 9, "space": "pixels"}
 

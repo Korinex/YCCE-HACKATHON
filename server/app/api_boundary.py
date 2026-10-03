@@ -129,6 +129,12 @@ def finding_for_api(finding: InternalFinding) -> PublicFinding:
         masked = "[REDACTED]"
     raw_masked = f"{masked} | {finding_id}"
     source = finding.get("source", "text")
+    context_hit = [str(hit) for hit in finding.get("context_hit", [])]
+    reason = str(finding.get("validation_reason", "Human review required"))
+    if context_hit:
+        reason += "; CONTEXT_MATCH"
+    if source == "ocr" and (finding.get("review_required") or finding.get("confidence_band") != "HIGH"):
+        reason += "; OCR_REVIEW"
     box = finding.get("bounding_box")
     bbox = None
     if box is not None:
@@ -142,8 +148,8 @@ def finding_for_api(finding: InternalFinding) -> PublicFinding:
         "confidence": float(finding.get("confidence", 0.0)),
         "confidence_band": str(finding.get("confidence_band", "LOW")),
         "rule": str(finding.get("rule") or _RULE_FALLBACK.get(finding["type"], "scout.pattern.v1")),
-        "reason": str(finding.get("validation_reason", "Human review required")),
-        "context_hit": [str(hit) for hit in finding.get("context_hit", [])],
+        "reason": reason,
+        "context_hit": context_hit,
         "sensitivity": str(finding.get("sensitivity", "OTHER")),
         "source": str(source),
         "ocr_confidence": finding.get("ocr_confidence"),
