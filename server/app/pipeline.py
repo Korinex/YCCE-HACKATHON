@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from importlib.util import find_spec
 from typing import Any
 
 from app.validators.aadhaar import validate_aadhaar, validate_vid
@@ -231,3 +232,41 @@ def detect_pii_pipeline(text: str | None = None, image_bytes: bytes | None = Non
     if image_bytes is not None:
         return analyze_image(image_bytes)["detected_items"]
     return []
+
+
+def analyze_content(content_type: str, content: str | bytes) -> dict[str, Any]:
+    """Return Backend 2's server-side handoff for one text or image input.
+
+    Backend 1 can retain ``detected_items`` and ``ocr_tokens`` in its session,
+    then use ``findings_for_api`` to build the public finding list. This result
+    contains raw detected/OCR values and must never be serialized directly.
+    """
+    if content_type == "text":
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Non-empty text content is required")
+        return {
+            "detected_items": detect_text(content),
+            "ocr_tokens": [],
+            "qr_findings": [],
+            "document": {"page_quality": None, "warnings": [], "qr_status": "NOT_APPLICABLE"},
+        }
+
+    if content_type == "image":
+        if not isinstance(content, bytes) or not content:
+            raise ValueError("Non-empty image bytes are required")
+        image_result = analyze_image(content)
+        from app.qr import detect_qr_codes
+
+        qr_available = find_spec("cv2") is not None
+        return {
+            "detected_items": image_result["detected_items"],
+            "ocr_tokens": image_result["ocr_tokens"],
+            "qr_findings": detect_qr_codes(content) if qr_available else [],
+            "document": {
+                "page_quality": image_result["page_quality"],
+                "warnings": image_result["warnings"],
+                "qr_status": "AVAILABLE" if qr_available else "UNAVAILABLE",
+            },
+        }
+
+    raise ValueError("content_type must be 'text' or 'image'")

@@ -1,4 +1,6 @@
-from app.pipeline import analyze_image, detect_text, normalize_digits
+import pytest
+
+from app.pipeline import analyze_content, analyze_image, detect_text, normalize_digits
 from app.validators.aadhaar import validate_aadhaar, validate_vid
 from app.validators.financial import luhn_valid, validate_financial_value
 from app.validators.pan import validate_pan
@@ -77,3 +79,61 @@ def test_ocr_quality_fails_closed_when_empty_or_weak(monkeypatch):
     degraded = analyze_image(b"image")
     assert degraded["page_quality"] == "DEGRADED"
     assert degraded["review_required"]
+
+
+def test_stable_text_handoff_keeps_findings_internal_and_skips_ocr(monkeypatch):
+    import app.pipeline
+
+    monkeypatch.setattr(app.pipeline, "analyze_image", lambda _: pytest.fail("text path invoked OCR"))
+    result = analyze_content("text", "PAN: ABCPE1234F")
+    assert set(result) == {"detected_items", "ocr_tokens", "qr_findings", "document"}
+    assert result["detected_items"][0]["raw_value"] == "ABCPE1234F"
+    assert result["ocr_tokens"] == []
+    assert result["qr_findings"] == []
+    assert result["document"]["qr_status"] == "NOT_APPLICABLE"
+
+
+def test_stable_image_handoff_includes_ocr_qr_and_degradation_metadata(monkeypatch):
+    import app.pipeline
+    import app.qr
+
+    monkeypatch.setattr(app.pipeline, "analyze_image", lambda _: {
+        "detected_items": [{"id": "f1", "raw_value": "secret", "type": "PHONE"}],
+        "ocr_tokens": [{"text": "secret", "confidence": 0.4}],
+        "page_quality": "DEGRADED",
+        "warnings": ["OCR_DEGRADED_REVIEW_REQUIRED"],
+    })
+    monkeypatch.setattr(app.pipeline, "find_spec", lambda name: object() if name == "cv2" else None)
+    monkeypatch.setattr(app.qr, "detect_qr_codes", lambda _: [{
+        "id": "qr_1", "decoded": True, "validation_status": "UNVERIFIED",
+        "fields": [], "quiet_zone_box": {"x": 1, "y": 2, "w": 30, "h": 30},
+        "raw_payload_returned": False,
+    }])
+    result = analyze_content("image", b"synthetic image bytes")
+    assert result["detected_items"][0]["raw_value"] == "secret"
+    assert result["ocr_tokens"][0]["text"] == "secret"
+    assert result["qr_findings"][0]["validation_status"] == "UNVERIFIED"
+    assert result["document"]["page_quality"] == "DEGRADED"
+    assert result["document"]["qr_status"] == "AVAILABLE"
+
+
+def test_stable_handoff_validates_content_type_and_payload():
+    with pytest.raises(ValueError):
+        analyze_content("text", "  ")
+    with pytest.raises(ValueError):
+        analyze_content("image", "not bytes")
+    with pytest.raises(ValueError):
+        analyze_content("pdf", b"content")
+
+
+def test_stable_image_handoff_marks_qr_unavailable(monkeypatch):
+    import app.pipeline
+
+    monkeypatch.setattr(app.pipeline, "analyze_image", lambda _: {
+        "detected_items": [], "ocr_tokens": [], "page_quality": "UNREADABLE",
+        "warnings": ["OCR_UNREADABLE_REVIEW_REQUIRED"],
+    })
+    monkeypatch.setattr(app.pipeline, "find_spec", lambda _: None)
+    result = analyze_content("image", b"synthetic image bytes")
+    assert result["qr_findings"] == []
+    assert result["document"]["qr_status"] == "UNAVAILABLE"
