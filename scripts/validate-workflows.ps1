@@ -25,7 +25,10 @@ foreach ($file in $workflows) {
     }
     
     # Check for description
-    if ($content -notmatch "description:") {
+    # Check for description in YAML frontmatter only
+    $frontmatterMatch = [regex]::Match($content, '\A---\r?\n(?<frontmatter>.*?)\r?\n---(?:\r?\n|\z)', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    $frontmatter = $frontmatterMatch.Groups["frontmatter"].Value
+    if ($frontmatter -notmatch "(?m)^description:") {
         Write-Host "❌ $($file.Name): Missing description in frontmatter" -ForegroundColor Red
         $ErrorCount++
         $hasErrors = $true

@@ -17,7 +17,7 @@ def _quiet_box(points: Any, width: int, height: int, padding_ratio: float = 0.25
     return {"x": x1, "y": y1, "w": x2-x1, "h": y2-y1}
 
 
-def detect_qr_codes(image_bytes: bytes) -> list[dict[str, Any]]:
+def detect_qr_codes(image_bytes: bytes) -> list[dict[str, Any]] | None:
     """Detect/decode QR payloads locally but never return payload or PII fields.
 
     UIDAI signature verification is deliberately not claimed here. Decoded content
@@ -61,4 +61,4 @@ def detect_qr_codes(image_bytes: bytes) -> list[dict[str, Any]]:
         return results
     except Exception:
         # Missing optional CV dependencies and malformed images fail closed to review.
-        return []
+        return None

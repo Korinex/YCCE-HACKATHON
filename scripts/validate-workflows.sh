@@ -24,7 +24,12 @@ for file in .agent/workflows/*.md; do
     fi
     
     # Check for description
-    if ! grep -q "description:" "$file"; then
+    # Check for description in YAML frontmatter only
+    frontmatter_valid=true
+    if ! frontmatter=$(awk '{ sub(/\r$/, "") } NR == 1 && $0 == "---" { in_frontmatter=1; next } in_frontmatter && $0 == "---" { closed=1; exit } in_frontmatter { print } END { if (!closed) exit 1 }' "$file"); then
+        frontmatter_valid=false
+    fi
+    if [ "$frontmatter_valid" = false ] || ! printf '%s\n' "$frontmatter" | grep -qE '^description:'; then
         echo "❌ $filename: Missing description in frontmatter"
         ((error_count++))
         has_errors=true

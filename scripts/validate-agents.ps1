@@ -108,6 +108,11 @@ foreach ($agent in $agents) {
     }
 }
 
+if ($AgentsChecked -eq 0) {
+    Write-Host "❌ No .md agent definitions found in .agents/agents/" -ForegroundColor Red
+    $ErrorCount++
+}
+
 Write-Host ""
 Write-Host "───────────────────────────────────────────────────────" -ForegroundColor Gray
 Write-Host ""

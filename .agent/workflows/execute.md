@@ -126,7 +126,12 @@ ls "$PHASE_DIR"/*-SUMMARY.md 2>/dev/null
 
 **If `--gaps-only`:** Filter to only plans with `gap_closure: true` in frontmatter.
 
-**If no incomplete plans found:** Phase already complete, skip to step 8.
+**If no incomplete plans found:**
+- When `--gaps-only` is active, rediscover plans without the gap filter before deciding
+    whether the phase is complete.
+- If no plans exist, or any plan lacks a matching SUMMARY, leave the phase status unchanged
+    and stop; an empty discovery result is not proof of completion.
+- Continue to step 8 only when at least one plan exists and every plan has a matching SUMMARY.
 
 ---
 
@@ -326,7 +331,10 @@ Phase {N} executed successfully. {X} plans, {Y} tasks completed.
 ## 9. Commit Phase Completion
 
 ```bash
-git add .gsd/ROADMAP.md .gsd/STATE.md .gsd/REQUIREMENTS.md
+git add .gsd/ROADMAP.md .gsd/STATE.md
+if [ -f .gsd/REQUIREMENTS.md ]; then
+    git add .gsd/REQUIREMENTS.md
+fi
 git commit -m "docs(phase-{N}): complete {phase-name}"
 ```
 

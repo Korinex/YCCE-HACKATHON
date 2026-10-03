@@ -1,6 +1,6 @@
 # Debug Template
 
-Template for `.gsd/debug/[slug].md` — active debug session tracking.
+Template for `.gsd/DEBUG.md` — shared active debug session tracking.
 
 ---
 

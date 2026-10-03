@@ -33,7 +33,10 @@ For each must-have in the milestone:
 
 ## 3. Review Technical Debt
 
-Check TODO.md and DECISIONS.md for:
+Read the root `TODO.md` and `DECISIONS.md`. For a selected archived milestone, also read
+`.gsd/milestones/{name}/DECISIONS.md` so archived decisions and deferred debt are included.
+
+Check these files for:
 - Deferred items during this milestone
 - Technical debt acknowledged
 - Items that should be addressed

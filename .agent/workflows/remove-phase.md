@@ -34,12 +34,15 @@ fi
 
 **PowerShell:**
 ```powershell
-$status = Select-String -Path ".gsd/ROADMAP.md" -Pattern "Phase $N:.*\n.*Status: (.*)"
+$roadmap = [System.IO.File]::ReadAllText(".gsd/ROADMAP.md")
+$phaseMatch = [regex]::Match($roadmap, "(?ms)^### Phase $N:.*?(?=^### Phase |\z)")
+$statusMatch = [regex]::Match($phaseMatch.Value, "(?m)^\*\*Status\*\*:\s*(.+)$")
+$status = $statusMatch.Groups[1].Value.Trim()
 ```
 
 **Bash:**
 ```bash
-status=$(grep -A1 "Phase $N:" ".gsd/ROADMAP.md" | grep "Status:" | cut -d: -f2)
+status=$(awk -v phase="$N" '$0 ~ "^### Phase " phase ":" { in_phase=1; next } in_phase && /^### Phase / { exit } in_phase && /^\*\*Status\*\*:/ { sub(/^\*\*Status\*\*:[[:space:]]*/, ""); print; exit }' ".gsd/ROADMAP.md")
 ```
 
 **Safety checks:**

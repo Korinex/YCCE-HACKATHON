@@ -87,6 +87,10 @@ looking like success.
 
 Write the full narrative to `.gsd/phases/{phase}/{n}-SUMMARY.md`.
 
+After writing the summary, stage and commit it in its own artifact commit before returning.
+Verify that commit with `git log -1 --oneline`. Keep the per-task commits above unchanged;
+the parent still merges the worktree commits when the wave closes.
+
 Return to the parent agent a **compact** result only — the parent's context is the resource
 you exist to protect. Never paste file contents, diffs, or the summary body into your reply.
 

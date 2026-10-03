@@ -242,7 +242,7 @@ Gap closure plans created.
 ## 6. Commit Verification
 
 ```bash
-git add .gsd/phases/{phase}/VERIFICATION.md
+git add .gsd/phases/{phase}/VERIFICATION.md .gsd/phases/{phase}/*-PLAN.md
 git commit -m "docs(phase-{N}): verification report"
 ```
 

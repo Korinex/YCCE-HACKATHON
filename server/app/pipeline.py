@@ -27,7 +27,7 @@ _CONTEXT = {
     "VEHICLE": r"vehicle|registration no|\breg no\b|number plate",
 }
 _RULES: list[tuple[str, re.Pattern[str]]] = [
-    ("AADHAAR", re.compile(r"(?<!\d)[2-9]\d{11}(?!\d)")),
+    ("AADHAAR", re.compile(r"(?<!\d)[2-9]\d{3}(?: ?\d{4}){2}(?!\d)")),
     ("VID", re.compile(r"(?<!\d)1\d{15}(?!\d)")),
     ("CREDIT_CARD", re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")),
     ("GSTIN", re.compile(r"(?<![A-Z0-9])\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9](?![A-Z0-9])", re.I)),
@@ -172,9 +172,17 @@ def detect_text(text: str, ocr_tokens: list[dict[str, Any]] | None = None) -> li
     for match in _HEALTH.finditer(text):
         candidates.append({"kind": "HEALTH_TERM", "start": match.start(), "end": match.end()})
 
-    # Longest span wins; for ties Aadhaar wins before phone/account patterns.
+    # Prefer stronger validation and identifier priority before span length.
     rank = {kind: index for index, (kind, _) in enumerate(_RULES)}
-    candidates.sort(key=lambda item: (-(item["end"] - item["start"]), rank.get(item["kind"], 999), item["start"]))
+    tier_rank = {"VALIDATED": 0, "FORMAT_ONLY": 1, "REVIEW": 2}
+    for item in candidates:
+        item["tier"] = _classify(
+            item["kind"], text[item["start"]:item["end"]], text, item["start"], item["end"]
+        )[0]
+    candidates.sort(key=lambda item: (
+        tier_rank[item["tier"]], rank.get(item["kind"], 999),
+        -(item["end"] - item["start"]), item["start"],
+    ))
     accepted: list[dict[str, Any]] = []
     for item in candidates:
         if any(item["start"] < other["end"] and other["start"] < item["end"] for other in accepted):
@@ -258,14 +266,19 @@ def analyze_content(content_type: str, content: str | bytes) -> dict[str, Any]:
         from app.qr import detect_qr_codes
 
         qr_available = find_spec("cv2") is not None
+        qr_findings = detect_qr_codes(content) if qr_available else None
+        qr_failed = qr_findings is None
+        warnings = list(image_result["warnings"])
+        if qr_failed:
+            warnings.append("QR_DETECTION_UNAVAILABLE_REVIEW_REQUIRED")
         return {
             "detected_items": image_result["detected_items"],
             "ocr_tokens": image_result["ocr_tokens"],
-            "qr_findings": detect_qr_codes(content) if qr_available else [],
+            "qr_findings": qr_findings or [],
             "document": {
                 "page_quality": image_result["page_quality"],
-                "warnings": image_result["warnings"],
-                "qr_status": "AVAILABLE" if qr_available else "UNAVAILABLE",
+                "warnings": warnings,
+                "qr_status": "UNAVAILABLE" if qr_failed else "AVAILABLE",
             },
         }
 

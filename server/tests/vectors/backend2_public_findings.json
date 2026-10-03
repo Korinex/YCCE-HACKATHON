@@ -41,7 +41,7 @@
     {
       "id": "f_8_16_health_term",
       "type": "HEALTH_TERM",
-      "raw_masked": "[REDACTED] | f_11_19_health_term",
+      "raw_masked": "[REDACTED] | f_8_16_health_term",
       "validity_class": "REVIEW",
       "confidence": 0.35,
       "confidence_band": "LOW",
@@ -59,7 +59,7 @@
     {
       "id": "f_7_17_phone",
       "type": "PHONE",
-      "raw_masked": "XXXXXX3210 | f_5_15_phone",
+      "raw_masked": "XXXXXX3210 | f_7_17_phone",
       "validity_class": "FORMAT_ONLY",
       "confidence": 0.5667,
       "confidence_band": "MEDIUM",

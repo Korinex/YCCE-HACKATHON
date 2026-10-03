@@ -100,8 +100,8 @@ plan it as such.
 **Wave Completion Protocol:**
 1. All tasks in wave verified
 2. State snapshot created
-3. Commit all wave work
-4. Update STATE.md with position
+3. Update STATE.md with position
+4. Commit all wave work
 
 ---
 

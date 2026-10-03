@@ -9,6 +9,7 @@ def test_public_finding_fixture_is_masked_and_covers_c1_cases():
     fixture = json.loads((VECTORS / "backend2_public_findings.json").read_text(encoding="utf-8"))
     findings = fixture["findings"]
     assert all("raw_value" not in finding for finding in findings)
+    assert all(finding["raw_masked"].rsplit(" | ", 1)[-1] == finding["id"] for finding in findings)
     assert all(any(mask in finding["raw_masked"].split(" | ")[0] for mask in ("X", "[REDACTED]", "***")) for finding in findings)
     assert {finding["validity_class"] for finding in findings} >= {"VALIDATED", "FORMAT_ONLY", "REVIEW"}
     assert any(finding["source"] == "ocr" and finding["bbox"] and finding["ocr_confidence"] for finding in findings)
