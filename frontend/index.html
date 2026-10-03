@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nirakshan – Privacy Shield demo</title>
+<link rel="stylesheet" href="styles.css"></head><body>
+<header><div class="bar"><button class="brand" onclick="go('home')" aria-label="Nirakshan home"><span class="logo">N</span><span>Nirakshan<small>Look closely before you share</small></span></button>
+<span class="pill"><i></i>Runs on this device</span><span class="pill" id="tm">Session: idle</span><span class="sz" role="group" aria-label="Text size"><button onclick="zoom(-1)" aria-label="Smaller text">A−</button> <button onclick="zoom(1)" aria-label="Larger text">A+</button></span></div>
+<nav class="tabs" id="nav" aria-label="Pages"></nav></header>
+<div class="tour"><div id="gd"></div></div>
+<main id="app"></main>
+<footer>No external upload. Local processing. Volatile session cache: up to 10 minutes. Nirakshan finds patterns such as Aadhaar and PAN. It does not check names or addresses and is not a guarantee of privacy. This is a demo with made-up data only.</footer>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<script src="app.js"></script></body></html>
