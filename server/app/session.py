@@ -7,6 +7,8 @@ from typing import Any
 
 from .schemas import SESSION_TTL_SECONDS, SessionRecord
 
+MAX_SESSIONS = 128
+
 
 class SessionStore:
     _instance: "SessionStore | None" = None
@@ -26,6 +28,8 @@ class SessionStore:
         metadata: dict[str, Any] | None = None,
         ttl_seconds: int = SESSION_TTL_SECONDS,
     ) -> SessionRecord:
+        if ttl_seconds < 1 or ttl_seconds > SESSION_TTL_SECONDS:
+            raise ValueError("Session TTL must be between 1 and 600 seconds")
         request_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc)
         session = SessionRecord(
@@ -33,11 +37,15 @@ class SessionStore:
             content_type=content_type,
             created_at=now,
             expires_at=now + timedelta(seconds=ttl_seconds),
-            content=content,
-            metadata=metadata or {},
+            original_content=content if content is not None else "",
+            document_metadata=metadata or {},
+            ocr_metadata={},
             findings=[],
         )
         with self._lock:
+            self.cleanup_expired()
+            if len(self._sessions) >= MAX_SESSIONS:
+                raise OverflowError("Session capacity reached")
             self._sessions[request_id] = session
         return session
 

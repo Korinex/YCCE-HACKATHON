@@ -7,10 +7,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.redact_engine import render_text_redaction
-from app.schemas import BoundingBox, InternalFinding, PublicFinding, SessionRecord, SESSION_TTL_SECONDS
-from app.session import SessionStore
+try:
+    from app.main import PipelineAdapter, app, backend3_verifier
+    from app.redact_engine import render_text_redaction
+    from app.schemas import AuditResult, BoundingBox, InternalFinding, PublicFinding, SessionRecord, SESSION_TTL_SECONDS
+    from app.session import SessionStore
+except ModuleNotFoundError:
+    from server.app.main import PipelineAdapter, app, backend3_verifier
+    from server.app.redact_engine import render_text_redaction
+    from server.app.schemas import AuditResult, BoundingBox, InternalFinding, PublicFinding, SessionRecord, SESSION_TTL_SECONDS
+    from server.app.session import SessionStore
 
 
 client = TestClient(app)
@@ -50,6 +56,49 @@ def test_schema_normalizes_bbox_and_context_hit_whitelist():
     assert finding.context_hit == "aadhaar"
 
 
+def test_internal_to_public_shape_and_audit_result_are_safe():
+    internal = InternalFinding(
+        id="qr-1",
+        type="AADHAAR",
+        raw_value="synthetic-secret",
+        value_masked="XXXXXXXX9012",
+        masked_display="XXXXXXXX9012",
+        source="qr",
+        qr_status="UNVERIFIED",
+        context_hit=["aadhaar"],
+    )
+    public = PublicFinding.model_validate({
+        key: value
+        for key, value in internal.model_dump(exclude={"raw_value"}).items()
+        if key in PublicFinding.model_fields
+    })
+    assert "raw_value" not in public.model_dump()
+    assert "original_filename" not in public.model_dump()
+    assert public.qr_status == "UNVERIFIED"
+
+    audit = backend3_verifier.verify_cleaned_output(
+        original_session=SessionStore().create(content_type="text", content="synthetic"),
+        cleaned_bytes=b"cleaned",
+        cleaned_content_type="text",
+        findings=[internal],
+    )
+    assert isinstance(audit, AuditResult)
+    assert "synthetic-secret" not in audit.model_dump_json()
+    assert audit.verdict in {"CLEAN", "PARTIAL"}
+
+
+def test_backend2_adapter_declares_safe_boundary():
+    analyzer = PipelineAdapter()
+    assert hasattr(analyzer, "analyze_content")
+    findings = analyzer.analyze_content(
+        content="PAN: ABCPE1234F",
+        content_type="text",
+        document_metadata={"kind": "text"},
+    )
+    assert findings[0].raw_value == "ABCPE1234F"
+    assert "raw_value" in findings[0].model_dump()
+
+
 def test_session_store_expiry_and_cleanup():
     store = SessionStore()
     store.clear_all()
@@ -85,13 +134,19 @@ def test_text_redaction_masks_and_removes_and_replace_token():
 def test_health_contract_unchanged():
     response = client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "ocr_available": False}
+    assert response.json() == {
+        "status": "ok",
+        "ocr_available": False,
+        "pdf_available": True,
+        "qr_available": False,
+        "mode": "LOCAL",
+    }
 
 
 def test_root_reports_skeleton_status():
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json()["status"] == "skeleton"
+    assert response.json()["status"] == "ready"
 
 
 def test_analyze_rejects_empty_text():
@@ -99,6 +154,9 @@ def test_analyze_rejects_empty_text():
     assert response.status_code == 422
 
 
-def test_analyze_is_deferred_for_standard_synthetic_input():
+def test_analyze_returns_safe_response_for_standard_synthetic_input():
     response = client.post("/api/v1/analyze", data={"content_type": "text", "text": "synthetic input"})
-    assert response.status_code == 501
+    assert response.status_code == 200
+    body = response.json()
+    assert "raw_value" not in body
+    assert "original_filename" not in body

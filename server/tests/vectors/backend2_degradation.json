@@ -1,0 +1,36 @@
+{
+  "fixture_version": "backend2.degradation.v1",
+  "purpose": "Safe fixtures for consumer tests of OCR/QR degraded states; no source text or QR payload is included.",
+  "scenarios": [
+    {
+      "id": "ocr_unavailable",
+      "input": {"kind": "image", "engine_state": "missing"},
+      "expected": {"page_quality": "UNREADABLE", "review_required": true, "warning": "OCR_UNREADABLE_REVIEW_REQUIRED", "export_clean_claim": false}
+    },
+    {
+      "id": "ocr_empty_result",
+      "input": {"kind": "image", "engine_state": "available", "token_count": 0},
+      "expected": {"page_quality": "UNREADABLE", "review_required": true, "warning": "OCR_UNREADABLE_REVIEW_REQUIRED", "export_clean_claim": false}
+    },
+    {
+      "id": "ocr_low_confidence",
+      "input": {"kind": "image", "engine_state": "available", "mean_confidence": 0.5, "masked_finding": "XXXXXX3210"},
+      "expected": {"page_quality": "DEGRADED", "review_required": true, "warning": "OCR_DEGRADED_REVIEW_REQUIRED", "finding_reason_includes": "OCR_REVIEW", "export_clean_claim": false}
+    },
+    {
+      "id": "unsupported_script_or_handwriting",
+      "input": {"kind": "image", "script_or_content": "unsupported"},
+      "expected": {"page_quality": "UNREADABLE", "review_required": true, "warning": "OCR_UNREADABLE_REVIEW_REQUIRED", "user_message": "This input is out of scope today (handwriting / unsupported script / scan quality). Nothing was redacted."}
+    },
+    {
+      "id": "qr_unsupported",
+      "input": {"kind": "qr", "detector_state": "unsupported"},
+      "expected": {"validation_status": "UNSUPPORTED_AT_CARD", "fields": [], "raw_payload_returned": false, "must_not_claim_verified": true}
+    },
+    {
+      "id": "qr_present_unverified",
+      "input": {"kind": "qr", "detector_state": "decoded_without_signature_verifier", "quiet_zone_box": {"x": 24, "y": 30, "w": 220, "h": 220}},
+      "expected": {"validation_status": "UNVERIFIED", "fields": [], "raw_payload_returned": false, "quiet_zone_must_be_covered": true, "must_not_claim_verified": true}
+    }
+  ]
+}

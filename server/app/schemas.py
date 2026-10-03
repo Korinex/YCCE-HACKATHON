@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -34,6 +34,10 @@ ContextHit = Literal[
     "address",
     "medical",
 ]
+ValidityClass = Literal["VALIDATED", "FORMAT_ONLY", "REVIEW"]
+ConfidenceBand = Literal["HIGH", "MEDIUM", "LOW"]
+FindingSource = Literal["text", "ocr", "qr"]
+QRStatus = Literal["UNVERIFIED", "UNSUPPORTED_AT_CARD"]
 
 SESSION_TTL_SECONDS = 600
 SESSION_TTL_SECONDS_DEMO = 1800
@@ -64,18 +68,33 @@ class InternalFinding(BaseModel):
     type: PIIType
     raw_value: str
     value_masked: str
+    masked_display: str | None = None
+    raw_span: tuple[int, int] | None = None
+    validity_class: ValidityClass = "REVIEW"
     is_valid: bool = False
     validation_method: str = "manual"
     validation_reason: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence_band: ConfidenceBand = "LOW"
     char_span: tuple[int, int] | None = None
     bbox: BoundingBox | None = None
     action: Action = "MASK"
-    context_hit: ContextHit | None = None
+    context_hit: ContextHit | list[ContextHit] | None = None
     sensitivity: str | None = None
-    source: str | None = None
+    source: FindingSource | None = None
     page: int | None = None
     ocr_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    default_action: Literal["MASK"] = "MASK"
+    decided: bool = False
+    qr_status: QRStatus | None = None
+
+    @model_validator(mode="after")
+    def normalize_internal_finding(self) -> "InternalFinding":
+        if self.masked_display is None:
+            self.masked_display = self.value_masked
+        if self.raw_span is None:
+            self.raw_span = self.char_span
+        return self
 
 
 class PublicFinding(BaseModel):
@@ -84,19 +103,23 @@ class PublicFinding(BaseModel):
     id: str
     type: PIIType
     value_masked: str
+    masked_display: str | None = None
     is_valid: bool = False
     validation_method: str = "manual"
     validation_reason: str = ""
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    confidence_band: str = "LOW"
+    confidence_band: ConfidenceBand = "LOW"
     char_span: tuple[int, int] | None = None
     bbox: dict[str, float] | None = None
-    context_hit: ContextHit | None = None
+    context_hit: ContextHit | list[ContextHit] | None = None
     sensitivity: str | None = None
     source: str | None = None
     page: int | None = None
     rule: str | None = None
     reason: str | None = None
+    validity_class: ValidityClass = "REVIEW"
+    ocr_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    qr_status: QRStatus | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -105,6 +128,8 @@ class PublicFinding(BaseModel):
             forbidden = set(data) & FORBIDDEN_PUBLIC_FIELDS
             if forbidden:
                 raise ValueError(f"Forbidden public fields: {sorted(forbidden)}")
+            if data.get("masked_display") is None and data.get("value_masked") is not None:
+                data = {**data, "masked_display": data["value_masked"]}
         return data
 
 
@@ -115,9 +140,18 @@ class SessionRecord(BaseModel):
     content_type: ContentType
     created_at: datetime
     expires_at: datetime
-    content: Any = None
+    original_content: bytes | str
     findings: list[InternalFinding] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    document_metadata: dict[str, Any] = Field(default_factory=dict)
+    ocr_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def content(self) -> bytes | str:
+        return self.original_content
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self.document_metadata
 
     @property
     def is_expired(self) -> bool:
@@ -143,6 +177,7 @@ class AnalyzeResponse(BaseModel):
     detected_items: list[PublicFinding] = Field(default_factory=list)
     summary: AnalyzeSummary
     warnings: list[str] = Field(default_factory=list)
+    document_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 DetectedItem = PublicFinding
@@ -159,13 +194,8 @@ class RedactRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str
-    content_type: ContentType = "text"
-    text: str | None = None
-    file_b64: str | None = None
-    decisions: list[dict[str, Any]] = Field(default_factory=list)
+    decisions: list[dict[str, Any]]
     strict_mode: bool = False
-    detected_items: list[PublicFinding] = Field(default_factory=list)
-    redaction_rules: list[RedactionRule] = Field(default_factory=list)
 
 
 class ProtectionSummary(BaseModel):
@@ -184,6 +214,7 @@ class RedactResponse(BaseModel):
     sanitized_file_b64: str | None = None
     download_filename: str | None = None
     protection_summary: ProtectionSummary
+    block_reason: str | None = None
 
 
 class ErrorBody(BaseModel):
@@ -224,6 +255,37 @@ class VerifyResponse(BaseModel):
     residuals: list[PublicFinding] = Field(default_factory=list)
 
 
+class AuditCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    passed: bool = Field(alias="pass")
+    scope: str | None = None
+    status: Literal["ran", "unsupported"] | None = None
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class AuditResidual(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    page: int | None = None
+    region: str | None = None
+
+
+class AuditResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    checks: list[AuditCheck] = Field(default_factory=list)
+    rectangles_vs_findings: Literal["PASS", "FAIL", "PARTIAL"]
+    residuals: list[AuditResidual] = Field(default_factory=list)
+    verdict: Literal["CLEAN", "FAIL", "PARTIAL"]
+    ran: int = Field(ge=0)
+    method_note: str
+    timestamp: str
+
+
 class SafeReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -260,6 +322,9 @@ __all__ = [
     "AnalyzeRequest",
     "AnalyzeResponse",
     "AnalyzeSummary",
+    "AuditCheck",
+    "AuditResidual",
+    "AuditResult",
     "AuditSummary",
     "BoundingBox",
     "ContentType",
@@ -279,6 +344,9 @@ __all__ = [
     "SessionRecord",
     "SESSION_TTL_SECONDS",
     "SESSION_TTL_SECONDS_DEMO",
+    "ValidityClass",
+    "ConfidenceBand",
+    "QRStatus",
     "VerifyRequest",
     "VerifyResponse",
 ]

@@ -1,0 +1,84 @@
+{
+  "cases": 8,
+  "fixture": "synthetic_backend2_v1",
+  "image": {
+    "image_scan_ms_mean": null,
+    "ocr_fallback_frequency": null,
+    "paddleocr_available": false,
+    "qr_cv2_available": false,
+    "rapidocr_available": false,
+    "status": "NOT_MEASURED_OCR_RUNTIME_UNAVAILABLE"
+  },
+  "iterations_per_text_case": 30,
+  "per_entity": {
+    "AADHAAR": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 2
+    },
+    "EMAIL": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 1
+    },
+    "HEALTH_TERM": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 1
+    },
+    "PAN": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 1
+    },
+    "PHONE": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 1
+    },
+    "UPI": {
+      "false_alarm_case_ids": [],
+      "false_negative": 0,
+      "false_positive": 0,
+      "known_miss_case_ids": [],
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 1
+    }
+  },
+  "raw_values_in_report": false,
+  "runtime": {
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "package_versions": {
+      "Pillow": "12.1.0",
+      "numpy": "2.4.1",
+      "onnxruntime": null,
+      "opencv-python": null,
+      "paddleocr": null,
+      "rapidocr-onnxruntime": null
+    },
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.14.2"
+  },
+  "text_scan_ms_mean": 0.0275
+}

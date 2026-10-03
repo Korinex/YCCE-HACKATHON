@@ -91,10 +91,10 @@ def render_image_redaction(file_bytes: bytes, items: list[dict[str, Any]], rules
         y = float(bbox.get("y", 0.0))
         w = float(bbox.get("w", 0.0))
         h = float(bbox.get("h", 0.0))
-        x0 = max(0, int(round(x * image.width)))
-        y0 = max(0, int(round(y * image.height)))
-        x1 = min(image.width, x0 + max(int(round(w * image.width)), 1))
-        y1 = min(image.height, y0 + max(int(round(h * image.height)), 1))
+        x0 = max(0, int(round(x * image.width)) - 2)
+        y0 = max(0, int(round(y * image.height)) - 2)
+        x1 = min(image.width, int(round((x + w) * image.width)) + 2)
+        y1 = min(image.height, int(round((y + h) * image.height)) + 2)
         for yy in range(y0, y1):
             for xx in range(x0, x1):
                 if 0 <= xx < image.width and 0 <= yy < image.height:

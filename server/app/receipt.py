@@ -22,8 +22,12 @@ def build_receipt(*, input_kind: str, page_count: int, category_counts: dict[str
         actions_by_category={str(k): int(v) for k, v in (actions_by_category or {}).items()},
         review_pages=list(review_pages or []),
         review_regions=list(review_regions or []),
-        ocr_warnings=list(ocr_warnings or []),
-        residual_verdict=dict(residual_verdict or {}),
+        ocr_warnings=["OCR_REVIEW" for _ in (ocr_warnings or [])],
+        residual_verdict={
+            key: value
+            for key, value in (residual_verdict or {}).items()
+            if key in {"verdict", "categories", "pages", "regions"}
+        },
     )
     return receipt
 
