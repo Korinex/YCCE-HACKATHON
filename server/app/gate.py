@@ -53,10 +53,18 @@ def evaluate_export_gate(*, findings: Any, decisions: Any, strict_mode: Any,
         if fid in by_id:
             duplicate_findings = True
         by_id[fid] = item
-        if item.get("validity_class") not in _VALIDITY:
+        # Backend 2's validation_tier has the same closed vocabulary and may
+        # feed this internal gate without changing Backend 1's public schema.
+        validity = item.get("validity_class", item.get("validation_tier"))
+        if not isinstance(validity, str) or validity not in _VALIDITY:
             reasons.append("ERR_INVALID_VALIDITY_CLASS")
-        if item.get("sensitivity") not in _SENSITIVITY:
+        sensitivity = item.get("sensitivity")
+        if not isinstance(sensitivity, str) or sensitivity not in _SENSITIVITY:
             reasons.append("ERR_INVALID_SENSITIVITY")
+        finding_action = item.get("action")
+        if finding_action is not None and (
+                not isinstance(finding_action, str) or finding_action not in _ACTIONS):
+            reasons.append("ERR_UNSUPPORTED_ACTION")
     if duplicate_findings:
         reasons.append("ERR_DUPLICATE_FINDING_ID")
 
@@ -70,7 +78,7 @@ def evaluate_export_gate(*, findings: Any, decisions: Any, strict_mode: Any,
         if not isinstance(did, str) or not did.strip():
             reasons.append("ERR_MISSING_DECISION_ID")
             continue
-        if action not in _ACTIONS:
+        if not isinstance(action, str) or action not in _ACTIONS:
             reasons.append("ERR_UNSUPPORTED_ACTION")
         if "decided_by_user" in item and type(item["decided_by_user"]) is not bool:
             reasons.append("ERR_MALFORMED_USER_DECISION")
@@ -84,11 +92,18 @@ def evaluate_export_gate(*, findings: Any, decisions: Any, strict_mode: Any,
     if any(did not in by_id for did in decisions_by_id):
         reasons.append("ERR_UNKNOWN_DECISION_ID")
 
+    for fid, finding in by_id.items():
+        if finding.get("action") == "KEEP":
+            decision = decisions_by_id.get(fid, {})
+            if decision.get("action") != "KEEP" or decision.get("decided_by_user") is not True:
+                reasons.append("ERR_KEEP_WITHOUT_USER_DECISION")
+
     if strict:
         for fid, finding in by_id.items():
             decision = decisions_by_id.get(fid, {})
             explicit = decision.get("decided_by_user") is True
-            if finding.get("validity_class") == "REVIEW" and not explicit:
+            validity = finding.get("validity_class", finding.get("validation_tier"))
+            if validity == "REVIEW" and not explicit:
                 reasons.append("BLOCK_STRICT_UNRESOLVED_REVIEW")
             if (decision.get("action") == "KEEP" and explicit
                     and finding.get("sensitivity") in _SENSITIVITY):

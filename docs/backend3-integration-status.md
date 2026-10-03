@@ -13,9 +13,11 @@ original findings and QR rectangles with cleaned output. The current route
 returns HTTP 501 for analysis and redaction. Backend 2 must provide its detector
 pipeline and image OCR extractor in this checkout; until then detector rescan
 is unsupported and image string search cannot run. QR signature verification
-remains deferred; rectangle/count checks do not establish authenticity.
+remains UNVERIFIED; rectangle checks do not establish authenticity.
 
 The integration test uses synthetic text only and asserts the real analyze API
 response. It is expected to fail with an explicit Backend 1 blocker until the
 routes are implemented. Gate and audit unit tests remain independently
 executable. No real Aadhaar, PAN, or bank document is used.
+
+> This prototype is a single-user, local-first reference implementation. A production deployment would need isolated processing workers, authentication, quotas, encrypted short-lived session storage, concurrency limits, deletion monitoring, and tenant isolation. Those controls are outside this offline prototype.

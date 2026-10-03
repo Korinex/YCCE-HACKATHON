@@ -150,6 +150,7 @@ def _check_detector_rescan(
     cleaned_bytes: bytes,
     cleaned_content_type: str,
     missing_interfaces: list[str],
+    residuals: list[ResidualHit],
 ) -> CheckResult:
     """Attempt to re-run the PII detection pipeline over the cleaned output.
 
@@ -165,7 +166,21 @@ def _check_detector_rescan(
         else:
             hits = detect_pii_pipeline(image_bytes=cleaned_bytes)
 
+        if not isinstance(hits, list):
+            residuals.append(ResidualHit(category="UNKNOWN"))
+            return CheckResult(name="DETECTOR_RESCAN", status="FAILED",
+                               reason="Detector returned malformed results",
+                               method_note="pipeline.detect_pii_pipeline")
         if hits:
+            for hit in hits:
+                if isinstance(hit, dict):
+                    residuals.append(ResidualHit(
+                        category=_category_from_finding(hit),
+                        page=hit.get("page") if type(hit.get("page")) is int and hit.get("page") > 0 else None,
+                        region=_region_from_finding(hit),
+                    ))
+                else:
+                    residuals.append(ResidualHit(category="UNKNOWN"))
             return CheckResult(
                 name="DETECTOR_RESCAN",
                 status="FAILED",
@@ -210,9 +225,8 @@ def _check_string_search(
     Works for text content only.  For image content we cannot extract text
     without OCR, so the check is UNSUPPORTED.
 
-    A finding is searched only when:
-    - It is a dict with a non-trivial raw_value or value_masked.
-    - Its action is not KEEP (intentionally retained).
+    Every finding value is searched regardless of KEEP. A deliberate KEEP may
+    be exportable in non-strict mode, but it must never be described as clean.
 
     The raw value is used transiently as a search needle and is NEVER stored
     in any result field, log, or exception message.
@@ -223,8 +237,14 @@ def _check_string_search(
         try:
             from .ocr_engine import extract_text_and_boxes
             tokens = extract_text_and_boxes(cleaned_bytes)
+            if not isinstance(tokens, list):
+                raise ValueError("invalid OCR result")
             cleaned_text = " ".join(str(token.get("text", "")) for token in tokens
                                     if isinstance(token, dict))
+            if not cleaned_text.strip():
+                return (CheckResult(name="STRING_SEARCH", status="UNSUPPORTED",
+                                    reason="OCR produced no usable text",
+                                    method_note="ocr_engine.extract_text_and_boxes"), [])
         except NotImplementedError:
             return (CheckResult(name="STRING_SEARCH", status="UNSUPPORTED",
                                 reason="OCR interface unavailable for cleaned image",
@@ -240,10 +260,9 @@ def _check_string_search(
 
     for finding in findings:
         if not isinstance(finding, dict):
-            continue
-        action = finding.get("action", "MASK")
-        if action == "KEEP":
-            continue  # intentionally retained; not a residual
+            return (CheckResult(name="STRING_SEARCH", status="UNSUPPORTED",
+                                reason="Finding record malformed",
+                                method_note="in-memory literal search"), residuals)
 
         # Prefer raw_value for accurate matching.  value_masked is a fallback
         # but only if it doesn't contain placeholder X sequences (which would
@@ -262,7 +281,9 @@ def _check_string_search(
                                 method_note="in-memory literal search"), residuals)
 
         if not search_value:
-            continue
+            return (CheckResult(name="STRING_SEARCH", status="UNSUPPORTED",
+                                reason="Original matched value unavailable",
+                                method_note="in-memory literal search"), residuals)
 
         pattern = re.escape(search_value)
         if re.search(pattern, cleaned_text):
@@ -323,6 +344,11 @@ def _check_metadata_inspect(
             method_note="content-type routing",
         )
 
+    if cleaned_content_type != "image":
+        return CheckResult(name="METADATA_INSPECT", status="UNSUPPORTED",
+                           reason="Content type has no supported metadata inspector",
+                           method_note="format capability check")
+
     suspicious_fields: list[str] = []
     data = cleaned_bytes
 
@@ -362,7 +388,9 @@ def _check_metadata_inspect(
                                 f"Image info key '{key}': non-empty ({len(str(val))} chars)"
                             )
             except Exception:  # noqa: BLE001
-                pass  # fall through to raw struct scan below
+                return CheckResult(name="METADATA_INSPECT", status="UNSUPPORTED",
+                                   reason="Image metadata parser rejected input",
+                                   method_note="Pillow image validation")
 
         # ── Raw PNG chunk scan (tEXt / iTXt / zTXt) ─────────────────────────
         if data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -417,8 +445,8 @@ def _check_metadata_inspect(
     except Exception as exc:  # noqa: BLE001
         return CheckResult(
             name="METADATA_INSPECT",
-            status="FAILED",
-            reason=f"Metadata parsing error: {type(exc).__name__}",
+            status="UNSUPPORTED",
+            reason="Metadata parser could not validate this input",
             method_note="Pillow EXIF + struct + zipfile (error)",
         )
 
@@ -445,6 +473,75 @@ def _check_metadata_inspect(
 # ---------------------------------------------------------------------------
 # Check 4 – QR re-decode / rectangle comparison
 # ---------------------------------------------------------------------------
+
+
+def _qr_rectangle_array(points: Any, np: Any) -> Any | None:
+    """Normalize detector points; None means no rectangle was reported."""
+    if points is None:
+        return None
+    try:
+        array = np.asarray(points, dtype=float)
+        if array.size == 0:
+            return None
+        array = array.reshape((-1, 4, 2))
+        if not np.isfinite(array).all():
+            raise ValueError("non-finite QR rectangle")
+        return array
+    except (TypeError, ValueError):
+        raise ValueError("malformed QR rectangles") from None
+
+
+def _detect_qr_rectangles(detector: Any, image: Any, np: Any) -> tuple[Any | None, bool]:
+    """Return rectangles and whether the observed QR state is established.
+
+    Multi-decode rectangles are accepted even when the return flag is false:
+    a rectangle is evidence of a QR regardless of payload decoding. If they
+    are absent, single-code and rectangle-only paths are attempted. Both
+    fallbacks must return well-formed no-detection results to establish
+    absence; exceptions or malformed results alone are not absence.
+    """
+    try:
+        multi_result = detector.detectAndDecodeMulti(image)
+        if not isinstance(multi_result, tuple) or len(multi_result) < 3:
+            raise ValueError("malformed multi-detection result")
+        multi_points = _qr_rectangle_array(multi_result[2], np)
+        if multi_points is not None:
+            return multi_points, True
+    except Exception:  # noqa: BLE001
+        pass
+
+    fallback_successes = 0
+    detected: list[Any] = []
+
+    try:
+        single_result = detector.detectAndDecode(image)
+        if not isinstance(single_result, tuple) or len(single_result) < 2:
+            raise ValueError("malformed single-detection result")
+        single_points = _qr_rectangle_array(single_result[1], np)
+        fallback_successes += 1
+        if single_points is not None:
+            detected.append(single_points)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        rectangle_result = detector.detectMulti(image)
+        if not isinstance(rectangle_result, tuple) or len(rectangle_result) < 2:
+            raise ValueError("malformed rectangle-only result")
+        rectangle_points = _qr_rectangle_array(rectangle_result[1], np)
+        fallback_successes += 1
+        if rectangle_points is not None:
+            detected.append(rectangle_points)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if detected:
+        # Both fallbacks may report the same rectangles. Single-code is enough
+        # to establish that at least one QR remains; use its geometry.
+        return max(detected, key=len), True
+    if fallback_successes == 2:
+        return np.empty((0, 4, 2), dtype=float), True
+    return None, False
 
 
 def _check_qr_redecode(
@@ -492,17 +589,18 @@ def _check_qr_redecode(
         if img is None:
             return CheckResult(
                 name="QR_REDECODE",
-                status="FAILED",
+                status="UNSUPPORTED",
                 reason="cv2 could not decode image bytes",
                 method_note="cv2.imdecode",
             )
 
         detector = cv2.QRCodeDetector()
-        # detectAndDecodeMulti returns (retval, decoded_info, points, straight_qrcode)
-        retval, decoded_info, points, _ = detector.detectAndDecodeMulti(img)
-
-        cleaned_qr_count = len(decoded_info) if (retval and decoded_info) else 0
-        cleaned_points = points if (retval and points is not None) else []
+        cleaned_points, qr_state_established = _detect_qr_rectangles(detector, img, np)
+        if not qr_state_established:
+            return CheckResult(name="QR_REDECODE", status="UNSUPPORTED",
+                               reason="QR presence could not be established by fallback detectors",
+                               method_note="multi/single/rectangle detection inconclusive")
+        cleaned_qr_count = len(cleaned_points)
 
         # An absent/invalid original QR inventory cannot establish that the
         # cleaned output retained or removed the expected codes.
@@ -511,9 +609,16 @@ def _check_qr_redecode(
                                reason="Original QR inventory unavailable",
                                method_note="cv2.QRCodeDetector; comparison unavailable")
         original_qr_codes = original_session["qr_codes"]
-        original_qr_count = len(original_qr_codes)
+        if any(not isinstance(entry, dict) or not isinstance(entry.get("action"), str)
+               or entry.get("action") not in
+               {"MASK", "UIDAI_FIRST8", "REPLACE_TOKEN", "REMOVE", "KEEP"}
+               for entry in original_qr_codes):
+            return CheckResult(name="QR_REDECODE", status="UNSUPPORTED",
+                               reason="QR redaction decision unavailable",
+                               method_note="Backend 1 session QR inventory/action required")
+        expected_kept = [entry for entry in original_qr_codes if entry["action"] == "KEEP"]
 
-        if original_qr_count == 0 and cleaned_qr_count == 0:
+        if not original_qr_codes and cleaned_qr_count == 0:
             # No QR codes expected and none found: trivial pass.
             return CheckResult(
                 name="QR_REDECODE",
@@ -522,25 +627,23 @@ def _check_qr_redecode(
                 method_note="cv2.QRCodeDetector (UNVERIFIED: no QR present)",
             )
 
-        if cleaned_qr_count != original_qr_count:
+        if cleaned_qr_count != len(expected_kept):
             return CheckResult(
                 name="QR_REDECODE",
                 status="FAILED",
-                reason=(
-                    f"QR code count mismatch: original={original_qr_count}, "
-                    f"cleaned={cleaned_qr_count}"
-                ),
+                reason=("Unexpected QR remains after redaction" if cleaned_qr_count > len(expected_kept)
+                        else "Recorded KEEP QR is missing from output"),
                 method_note="cv2.QRCodeDetector",
             )
 
         # Compare polygons when an original location is available. Payloads
         # are deliberately ignored; cryptographic identity remains deferred.
-        if original_qr_count:
+        if expected_kept:
             try:
                 import numpy as np
                 current = np.asarray(cleaned_points, dtype=float).reshape((-1, 4, 2))
                 expected = []
-                for entry in original_qr_codes:
+                for entry in expected_kept:
                     pts = entry.get("points") if isinstance(entry, dict) else None
                     if pts is None:
                         return CheckResult(name="QR_REDECODE", status="UNSUPPORTED",
@@ -557,15 +660,16 @@ def _check_qr_redecode(
                                    reason="Original QR rectangles malformed",
                                    method_note="rectangle comparison unavailable")
 
-        # NOTE: Signature/content verification is intentionally deferred.
+        # QR payload signature/authenticity is never checked in this product.
+        if expected_kept:
+            return CheckResult(name="QR_REDECODE", status="UNSUPPORTED",
+                               reason="Retained QR payload authenticity is UNVERIFIED",
+                               method_note="rectangle comparison only; signature verification deferred")
         return CheckResult(
             name="QR_REDECODE",
             status="PASSED",
-            reason=(
-                f"QR code count matches ({cleaned_qr_count}). "
-                "Content/signature verification UNVERIFIED (deferred)."
-            ),
-            method_note="cv2.QRCodeDetector (count match; signature NOT verified)",
+            reason="QR redaction decisions match; signature verification is UNVERIFIED",
+            method_note="cv2.QRCodeDetector; QR payload authenticity unsupported",
         )
 
     except ImportError:
@@ -650,27 +754,41 @@ def verify_cleaned_output(
         return AuditResult(verdict="PARTIAL", checks=[CheckResult(
             name="INPUT_VALIDATION", status="UNSUPPORTED",
             reason="Malformed audit inputs", method_note="input validation")], ran=0)
-    if cleaned_content_type not in {"text", "image"}:
-        from .audit import CheckResult as CR  # noqa: PLC0415
-        return AuditResult(
-            verdict="FAIL",
-            checks=[
-                CR(
-                    name="INPUT_VALIDATION",
-                    status="FAILED",
-                    reason=f"Unknown cleaned_content_type: {cleaned_content_type!r}",
-                )
-            ],
-            notes=["Audit aborted: invalid content type"],
-            ran=0,
-        )
+    if not isinstance(cleaned_content_type, str) or cleaned_content_type not in {"text", "image"}:
+        return AuditResult(verdict="PARTIAL", checks=[CheckResult(
+            name=name, status="UNSUPPORTED", reason="Content type unsupported",
+            method_note="format capability check") for name in
+            ("DETECTOR_RESCAN", "STRING_SEARCH", "METADATA_INSPECT", "QR_REDECODE")],
+            notes=["No checks ran because this format is unsupported"], ran=0)
 
     missing_interfaces: list[str] = []
     all_checks: list[CheckResult] = []
     all_residuals: list[ResidualHit] = []
 
+    # Validate findings independently. Missing sensitivity or malformed actions
+    # cannot yield a CLEAN audit even if no literal can be searched.
+    allowed_actions = {"MASK", "UIDAI_FIRST8", "REPLACE_TOKEN", "REMOVE", "KEEP"}
+    categories = {"AADHAAR", "VID", "PAN", "PHONE", "BANK_ACCOUNT", "IFSC",
+                  "UPI", "CREDIT_CARD", "GSTIN", "PASSPORT", "VOTER_ID",
+                  "DRIVING_LICENCE", "VEHICLE", "EMAIL", "HEALTH_TERM"}
+    invalid_finding = any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("action", "MASK"), str)
+        or item.get("action", "MASK") not in allowed_actions
+        or not isinstance(item.get("sensitivity"), str)
+        or item.get("sensitivity") not in {"GOVT_ID", "FINANCIAL", "HEALTH", "CONTACT"}
+        or not isinstance(item.get("type"), str) or item.get("type") not in categories
+        or not isinstance(item.get("raw_value"), str) or not item.get("raw_value")
+        for item in findings
+    )
+    if invalid_finding:
+        all_checks.append(CheckResult(name="FINDING_VALIDATION", status="UNSUPPORTED",
+                                      reason="Finding fields incomplete or malformed",
+                                      method_note="Backend 1/2 finding contract"))
+
     # 1. Detector re-scan (UNSUPPORTED – pipeline stub)
-    all_checks.append(_check_detector_rescan(cleaned_bytes, cleaned_content_type, missing_interfaces))
+    all_checks.append(_check_detector_rescan(cleaned_bytes, cleaned_content_type,
+                                             missing_interfaces, all_residuals))
 
     # 2. String search (implemented: stdlib re)
     string_check, string_residuals = _check_string_search(
@@ -683,9 +801,18 @@ def verify_cleaned_output(
     all_checks.append(_check_metadata_inspect(cleaned_bytes, cleaned_content_type))
 
     # 4. QR re-decode (implemented: cv2.QRCodeDetector)
-    all_checks.append(
-        _check_qr_redecode(cleaned_bytes, cleaned_content_type, original_session)
-    )
+    qr_check = _check_qr_redecode(cleaned_bytes, cleaned_content_type, original_session)
+    if cleaned_content_type == "image" and "UNVERIFIED" not in qr_check.method_note.upper():
+        qr_check = CheckResult(name=qr_check.name, status=qr_check.status,
+                               reason=qr_check.reason,
+                               method_note=qr_check.method_note +
+                               "; QR signature/authenticity UNVERIFIED (not checked)")
+    all_checks.append(qr_check)
+    if qr_check.status == "FAILED" and "Unexpected QR remains" in qr_check.reason:
+        all_residuals.append(ResidualHit(category="QR"))
+    if (any(check.name == "METADATA_INSPECT" and check.status == "FAILED"
+            for check in all_checks)):
+        all_residuals.append(ResidualHit(category="METADATA"))
 
     verdict = _compute_verdict(all_checks)
 
